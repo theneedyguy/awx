@@ -62,7 +62,7 @@ jobs:
           repository: ansible/awx-logos
           path: awx-logos
 
-       - name: Install playbook dependencies
+      - name: Install playbook dependencies
         run: |
           python3 -m pip install docker
 
