@@ -64,7 +64,7 @@ jobs:
 
       - name: Install playbook dependencies
         run: |
-          python3 -m pip install docker
+          python3 -m pip install docker ansible
 
       - name: Build and stage AWX
         working-directory: awx
