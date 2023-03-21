@@ -1,0 +1,100 @@
+---
+name: Stage Release Self Hosted
+env:
+  LC_ALL: "C.UTF-8" # prevent ERROR: Ansible could not initialize the preferred locale: unsupported locale setting
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'AWX version.'
+        required: true
+        default: ''
+      operator_version:
+        description: 'Operator version. Leave blank to skip staging awx-operator.'
+        default: ''
+      confirm:
+        description: 'Are you sure? Set this to yes.'
+        required: true
+        default: 'no'
+
+jobs:
+  stage:
+    if: endsWith(github.repository, '/awx')
+    #runs-on: ubuntu-latest
+    runs-on: self-hosted
+    permissions:
+      packages: write
+      contents: write
+    steps:
+      - name: Verify inputs
+        run: |
+          set -e
+
+          if [[ ${{ github.event.inputs.confirm }} != "yes" ]]; then
+            >&2 echo "Confirm must be 'yes'"
+            exit 1
+          fi
+
+          if [[ ${{ github.event.inputs.version }} == "" ]]; then
+            >&2 echo "Set version to continue."
+            exit 1
+          fi
+
+          exit 0
+
+      - name: Checkout awx
+        uses: actions/checkout@v2
+        with:
+          path: awx
+
+      - name: Get python version from Makefile
+        run: echo py_version=`make PYTHON_VERSION` >> $GITHUB_ENV
+
+      - name: Install python ${{ env.py_version }}
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ env.py_version }}
+
+      - name: Checkout awx-logos
+        uses: actions/checkout@v2
+        with:
+          repository: ansible/awx-logos
+          path: awx-logos
+
+      - name: Checkout awx-operator
+        uses: actions/checkout@v2
+        with:
+          repository: ${{ github.repository_owner }}/awx-operator
+          path: awx-operator
+
+      - name: Install playbook dependencies
+        run: |
+          python3 -m pip install docker
+
+      - name: Build and stage AWX
+        working-directory: awx
+        run: |
+          ansible-playbook -v tools/ansible/build.yml \
+            -e registry=ghcr.io \
+            -e registry_username=${{ github.actor }} \
+            -e registry_password=${{ secrets.GITHUB_TOKEN }} \
+            -e awx_image=${{ github.repository }} \
+            -e awx_version=${{ github.event.inputs.version }} \
+            -e ansible_python_interpreter=$(which python3) \
+            -e push=yes \
+            -e awx_official=yes
+
+      - name: Log in to GHCR
+        run: |
+          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Create draft release for AWX
+        working-directory: awx
+        run: |
+          ansible-playbook -v tools/ansible/stage.yml \
+            -e repo=${{ github.repository }} \
+            -e awx_image=ghcr.io/${{ github.repository }} \
+            -e version=${{ github.event.inputs.version }} \
+            -e github_token=${{ secrets.GITHUB_TOKEN }}
+
