@@ -62,13 +62,7 @@ jobs:
           repository: ansible/awx-logos
           path: awx-logos
 
-      - name: Checkout awx-operator
-        uses: actions/checkout@v2
-        with:
-          repository: ${{ github.repository_owner }}/awx-operator
-          path: awx-operator
-
-      - name: Install playbook dependencies
+       - name: Install playbook dependencies
         run: |
           python3 -m pip install docker
 
