@@ -1,10 +1,12 @@
 -include awx/ui_next/Makefile
 
 PYTHON := $(notdir $(shell for i in python3.9 python3; do command -v $$i; done|sed 1q))
+SHELL := bash
 DOCKER_COMPOSE ?= docker-compose
 OFFICIAL ?= no
 NODE ?= node
 NPM_BIN ?= npm
+KIND_BIN ?= $(shell which kind)
 CHROMIUM_BIN=/tmp/chrome-linux/chrome
 GIT_BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
 MANAGEMENT_COMMAND ?= awx-manage
@@ -27,6 +29,8 @@ COLLECTION_TEMPLATE_VERSION ?= false
 # NOTE: This defaults the container image version to the branch that's active
 COMPOSE_TAG ?= $(GIT_BRANCH)
 MAIN_NODE_TYPE ?= hybrid
+# If set to true docker-compose will also start a pgbouncer instance and use it
+PGBOUNCER ?= false
 # If set to true docker-compose will also start a keycloak instance
 KEYCLOAK ?= false
 # If set to true docker-compose will also start an ldap instance
@@ -37,6 +41,8 @@ SPLUNK ?= false
 PROMETHEUS ?= false
 # If set to true docker-compose will also start a grafana instance
 GRAFANA ?= false
+# If set to true docker-compose will also start a hashicorp vault instance
+VAULT ?= false
 # If set to true docker-compose will also start a tacacs+ instance
 TACACS ?= false
 
@@ -73,7 +79,7 @@ I18N_FLAG_FILE = .i18n_built
 	sdist \
 	ui-release ui-devel \
 	VERSION PYTHON_VERSION docker-compose-sources \
-	.git/hooks/pre-commit github_ci_setup github_ci_runner
+	.git/hooks/pre-commit
 
 clean-tmp:
 	rm -rf tmp/
@@ -318,20 +324,9 @@ test:
 	cd awxkit && $(VENV_BASE)/awx/bin/tox -re py3
 	awx-manage check_migrations --dry-run --check  -n 'missing_migration_file'
 
-## Login to Github container image registry, pull image, then build image.
-github_ci_setup:
-	# GITHUB_ACTOR is automatic github actions env var
-	# CI_GITHUB_TOKEN is defined in .github files
-	echo $(CI_GITHUB_TOKEN) | docker login ghcr.io -u $(GITHUB_ACTOR) --password-stdin
-	docker pull $(DEVEL_IMAGE_NAME) || :  # Pre-pull image to warm build cache
-	$(MAKE) docker-compose-build
-
 ## Runs AWX_DOCKER_CMD inside a new docker container.
 docker-runner:
 	docker run -u $(shell id -u) --rm -v $(shell pwd):/awx_devel/:Z --workdir=/awx_devel $(DEVEL_IMAGE_NAME) $(AWX_DOCKER_CMD)
-
-## Builds image and runs AWX_DOCKER_CMD in it, mainly for .github checks.
-github_ci_runner: github_ci_setup docker-runner
 
 test_collection:
 	rm -f $(shell ls -d $(VENV_BASE)/awx/lib/python* | head -n 1)/no-global-site-packages.txt
@@ -378,7 +373,7 @@ test_collection_sanity:
 	cd $(COLLECTION_INSTALL) && ansible-test sanity $(COLLECTION_SANITY_ARGS)
 
 test_collection_integration: install_collection
-	cd $(COLLECTION_INSTALL) && ansible-test integration $(COLLECTION_TEST_TARGET)
+	cd $(COLLECTION_INSTALL) && ansible-test integration -vvv $(COLLECTION_TEST_TARGET)
 
 test_unit:
 	@if [ "$(VENV_BASE)" ]; then \
@@ -520,15 +515,20 @@ docker-compose-sources: .git/hooks/pre-commit
 	    -e control_plane_node_count=$(CONTROL_PLANE_NODE_COUNT) \
 	    -e execution_node_count=$(EXECUTION_NODE_COUNT) \
 	    -e minikube_container_group=$(MINIKUBE_CONTAINER_GROUP) \
+	    -e enable_pgbouncer=$(PGBOUNCER) \
 	    -e enable_keycloak=$(KEYCLOAK) \
 	    -e enable_ldap=$(LDAP) \
 	    -e enable_splunk=$(SPLUNK) \
 	    -e enable_prometheus=$(PROMETHEUS) \
 	    -e enable_grafana=$(GRAFANA) \
+	    -e enable_vault=$(VAULT) \
 	    -e enable_tacacs=$(TACACS) \
             $(EXTRA_SOURCES_ANSIBLE_OPTS)
 
 docker-compose: awx/projects docker-compose-sources
+	ansible-galaxy install --ignore-certs -r tools/docker-compose/ansible/requirements.yml;
+	ansible-playbook -i tools/docker-compose/inventory tools/docker-compose/ansible/initialize_containers.yml \
+	  -e enable_vault=$(VAULT);
 	$(DOCKER_COMPOSE) -f tools/docker-compose/_sources/docker-compose.yml $(COMPOSE_OPTS) up $(COMPOSE_UP_OPTS) --remove-orphans
 
 docker-compose-credential-plugins: awx/projects docker-compose-sources
@@ -580,7 +580,7 @@ docker-clean:
 	-$(foreach image_id,$(shell docker images --filter=reference='*/*/*awx_devel*' --filter=reference='*/*awx_devel*' --filter=reference='*awx_devel*' -aq),docker rmi --force $(image_id);)
 
 docker-clean-volumes: docker-compose-clean docker-compose-container-group-clean
-	docker volume rm -f tools_awx_db tools_grafana_storage tools_prometheus_storage $(docker volume ls --filter name=tools_redis_socket_ -q)
+	docker volume rm -f tools_awx_db tools_vault_1 tools_grafana_storage tools_prometheus_storage $(docker volume ls --filter name=tools_redis_socket_ -q)
 
 docker-refresh: docker-clean docker-compose
 
@@ -653,6 +653,9 @@ awx-kube-dev-build: Dockerfile.kube-dev
 	    --cache-from=$(DEV_DOCKER_TAG_BASE)/awx_kube_devel:$(COMPOSE_TAG) \
 	    -t $(DEV_DOCKER_TAG_BASE)/awx_kube_devel:$(COMPOSE_TAG) .
 
+
+kind-dev-load: awx-kube-dev-build
+	$(KIND_BIN) load docker-image $(DEV_DOCKER_TAG_BASE)/awx_kube_devel:$(COMPOSE_TAG)
 
 # Translation TASKS
 # --------------------------------------

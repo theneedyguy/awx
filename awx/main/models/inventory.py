@@ -10,7 +10,6 @@ import copy
 import os.path
 from urllib.parse import urljoin
 
-import dateutil.relativedelta
 import yaml
 
 # Django
@@ -890,27 +889,10 @@ class HostMetric(models.Model):
             self.deleted = False
             self.save(update_fields=['deleted'])
 
-    @classmethod
-    def cleanup_task(cls, months_ago):
-        try:
-            months_ago = int(months_ago)
-            if months_ago <= 0:
-                raise ValueError()
-
-            last_automation_before = now() - dateutil.relativedelta.relativedelta(months=months_ago)
-
-            logger.info(f'Cleanup [HostMetric]: soft-deleting records last automated before {last_automation_before}')
-            HostMetric.active_objects.filter(last_automation__lt=last_automation_before).update(
-                deleted=True, deleted_counter=models.F('deleted_counter') + 1, last_deleted=now()
-            )
-            settings.CLEANUP_HOST_METRICS_LAST_TS = now()
-        except (TypeError, ValueError):
-            logger.error(f"Cleanup [HostMetric]: months_ago({months_ago}) has to be a positive integer value")
-
 
 class HostMetricSummaryMonthly(models.Model):
     """
-    HostMetric summaries computed by scheduled task <TODO> monthly
+    HostMetric summaries computed by scheduled task 'awx.main.tasks.system.host_metric_summary_monthly' monthly
     """
 
     date = models.DateField(unique=True)
